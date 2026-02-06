@@ -26,7 +26,8 @@ type LogEntry = {
   id: number;
   timestamp: number;
   exerciseName: string;
-  duration: number;
+  duration: number; // Actual completed duration
+  plannedDuration: number; // What was target
   phaseId: number;
 };
 
@@ -332,7 +333,7 @@ export default function App() {
     speak(briefing);
   };
 
-  const finishExercise = async () => {
+  const finishExercise = async (durationOverride?: number) => {
     if (!activeExercise) return;
     clearInterval(timerRef.current);
     setIsRunning(false);
@@ -342,11 +343,17 @@ export default function App() {
     const newStreak = streak + 1;
     setStreak(newStreak);
     
-    const newLog = {
+    // Calculate actual elapsed time or use override (full duration if timer finished)
+    const completedDuration = durationOverride !== undefined 
+        ? durationOverride 
+        : Math.max(0, activeExercise.duration - timeLeft);
+
+    const newLog: LogEntry = {
       id: now,
       timestamp: now,
       exerciseName: activeExercise.name,
-      duration: activeExercise.duration,
+      duration: Math.round(completedDuration), // Save actual duration
+      plannedDuration: activeExercise.duration,
       phaseId: currentPhase.id
     };
     const updatedLogs = [newLog, ...logs];
@@ -361,7 +368,8 @@ export default function App() {
         setCoachMessage("Gemini bewertet...");
         const context = `
             Nutzer hat gerade beendet: ${currentExName}.
-            Dauer: ${activeExercise.duration} Sekunden geplant.
+            Geplant: ${activeExercise.duration}s.
+            Geschafft: ${Math.round(completedDuration)}s.
             Sag 'Weiter', um fortzufahren.
         `;
         const aiText = await callGeminiCoach(apiKey, context, "Lobender Trainer");
@@ -374,7 +382,7 @@ export default function App() {
              speak(msg);
         }
     } else {
-        const msg = "Gespeichert. Sag 'Weiter' für die nächste Übung.";
+        const msg = `Gespeichert (${Math.round(completedDuration)}s). Sag 'Weiter'.`;
         setCoachMessage(msg);
         speak(msg);
     }
@@ -408,12 +416,14 @@ export default function App() {
                 else generateBriefingAndSelect(); 
             } else if (transcriptText.includes('log')) {
                 setView('log');
+            } else if (transcriptText.includes('einstellung') || transcriptText.includes('setup')) {
+                setView('settings');
             } else if (transcriptText.includes('home') || transcriptText.includes('zurück')) {
                 setView('home');
             }
         };
     }
-  }, [activeExercise, isRunning, view, logs, currentPhase, apiKey]);
+  }, [activeExercise, isRunning, view, logs, currentPhase, apiKey, timeLeft]);
 
   const toggleMic = () => {
     if (isListening) {
@@ -455,7 +465,8 @@ export default function App() {
           }
           if (newVal === 3) speak("3.. 2.. 1..");
           if (newVal === 0) {
-            finishExercise();
+            // Auto-finish with full duration
+            finishExercise(activeExercise.duration);
             speak("Zeit um! Gut gemacht.");
           }
           return newVal;
@@ -474,7 +485,6 @@ export default function App() {
   if (!hasStarted) {
     const progress = getPhaseProgress(currentPhase);
     
-    // START SCREEN WITH SETTINGS VIEW HANDLING
     if (view === 'settings') {
       return (
         <div className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-6 font-sans">
@@ -568,6 +578,10 @@ export default function App() {
                  <span>{streak}</span>
              </div>
              
+             <button onClick={() => setView('settings')} className="p-2 bg-slate-700 hover:bg-slate-600 rounded-full text-slate-400 transition-colors">
+                 <Settings size={18} />
+             </button>
+
              <button onClick={() => setShowHelp(!showHelp)} className="p-2 bg-slate-700 hover:bg-slate-600 rounded-full text-slate-400 transition-colors">
                  <HelpCircle size={18} />
              </button>
@@ -595,6 +609,7 @@ export default function App() {
                   <div className="flex items-center gap-2"><span className="w-2 h-2 bg-blue-500 rounded-full"></span> "Start" / "Los"</div>
                   <div className="flex items-center gap-2"><span className="w-2 h-2 bg-red-500 rounded-full"></span> "Stopp" / "Pause"</div>
                   <div className="flex items-center gap-2"><span className="w-2 h-2 bg-green-500 rounded-full"></span> "Weiter" / "Fertig"</div>
+                  <div className="flex items-center gap-2"><span className="w-2 h-2 bg-yellow-500 rounded-full"></span> "Setup" / "Log"</div>
               </div>
           </div>
       )}
@@ -675,7 +690,7 @@ export default function App() {
                         >
                             {isRunning ? <><Square size={18} fill="currentColor" /> Pause</> : <><Play size={18} fill="currentColor" /> Start</>}
                         </button>
-                        <button onClick={finishExercise} className="px-4 bg-slate-800 text-green-400 border border-slate-700 rounded-xl hover:bg-slate-750 font-semibold">
+                        <button onClick={() => finishExercise()} className="px-4 bg-slate-800 text-green-400 border border-slate-700 rounded-xl hover:bg-slate-750 font-semibold">
                             Fertig
                         </button>
                     </div>
@@ -730,7 +745,9 @@ export default function App() {
                        <h4 className="font-medium text-slate-200 text-sm">{log.exerciseName}</h4>
                        <p className="text-xs text-slate-500">{formatDate(log.timestamp)}</p>
                      </div>
-                     <span className="text-blue-400 font-mono text-sm bg-blue-900/20 px-2 py-1 rounded">{log.duration}s</span>
+                     <span className={`font-mono text-sm px-2 py-1 rounded ${log.duration >= log.plannedDuration ? 'bg-green-900/20 text-green-400' : 'bg-blue-900/20 text-blue-400'}`}>
+                        {log.duration}s
+                     </span>
                    </div>
                  ))}
                </div>
