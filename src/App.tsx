@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Play, Square, Activity, Calendar, Trophy, History, ArrowLeft, Clock, RefreshCw, Video, ExternalLink, HelpCircle, X } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Mic, MicOff, Play, Square, Activity, Calendar, Trophy, History, ArrowLeft, RefreshCw, Video, ExternalLink, HelpCircle, X } from 'lucide-react';
 
 // --- Types & Constants ---
 
@@ -188,8 +188,9 @@ export default function App() {
   const [coachMessage, setCoachMessage] = useState("Lade Trainingsplan...");
   
   // Refs
+  // FIX: Use 'any' to avoid NodeJS namespace issues during build
   const recognitionRef = useRef<any>(null);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<any>(null);
 
   // --- Initialization ---
 
@@ -274,7 +275,7 @@ export default function App() {
 
   const finishExercise = () => {
     if (!activeExercise) return;
-    clearInterval(timerRef.current as NodeJS.Timeout);
+    clearInterval(timerRef.current);
     setIsRunning(false);
     
     const now = Date.now();
@@ -306,7 +307,7 @@ export default function App() {
 
   const toggleTimer = () => {
     if (isRunning) {
-      clearInterval(timerRef.current as NodeJS.Timeout);
+      clearInterval(timerRef.current);
       setIsRunning(false);
       speak("Pause.");
     } else {
@@ -393,7 +394,7 @@ export default function App() {
         });
       }, 1000);
     }
-    return () => clearInterval(timerRef.current as NodeJS.Timeout);
+    return () => clearInterval(timerRef.current);
   }, [isRunning, activeExercise, timeLeft]);
 
   // --- Render ---
