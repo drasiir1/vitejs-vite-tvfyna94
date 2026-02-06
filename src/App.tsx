@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Play, Square, Activity, Calendar, Trophy, History, ArrowLeft, RefreshCw, Video, ExternalLink, HelpCircle, X, Settings, Key } from 'lucide-react';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { Mic, MicOff, Play, Square, Activity, Trophy, History, ArrowLeft, RefreshCw, Video, HelpCircle, X, Settings, Key, Calendar, ExternalLink } from 'lucide-react';
 
 // --- Types & Constants ---
 
@@ -177,27 +176,40 @@ const speak = (text: string) => {
   window.speechSynthesis.speak(utterance);
 };
 
-// --- GEMINI API LOGIC ---
+// --- GEMINI API LOGIC (REST Version - No SDK needed) ---
 
 const callGeminiCoach = async (apiKey: string, context: string, systemRole: string = "Motivator") => {
+    if (!apiKey) return null;
     try {
-        const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Use fast model
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                contents: [{
+                    parts: [{
+                        text: `
+                            Du bist ein strenger, aber fairer Calisthenics Coach. Rollenspiel. 
+                            Antworte extrem kurz (max 2 Sätze). Du sprichst direkt mit dem Athleten.
+                            Situation: ${context}
+                            Rolle: ${systemRole}.
+                            Sprache: Deutsch. Umgangssprache, direkt.
+                        `
+                    }]
+                }]
+            })
+        });
         
-        const prompt = `
-        Du bist ein strenger, aber fairer Calisthenics Coach. Rollenspiel. 
-        Antworte extrem kurz (max 2 Sätze). Du sprichst direkt mit dem Athleten.
-        Situation: ${context}
-        Rolle: ${systemRole}.
-        Sprache: Deutsch. Umgangssprache, direkt.
-        `;
-
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        return response.text();
+        const data = await response.json();
+        if (data.error) {
+            console.error("Gemini API Error:", data.error);
+            return null;
+        }
+        return data.candidates?.[0]?.content?.parts?.[0]?.text || null;
     } catch (error) {
-        console.error("Gemini Error:", error);
-        return null; // Fallback handled by caller
+        console.error("Fetch Error:", error);
+        return null;
     }
 };
 
@@ -220,6 +232,7 @@ export default function App() {
   const [coachMessage, setCoachMessage] = useState("Lade Trainingsplan...");
   
   const shouldListenRef = useRef(false);
+  // Using 'any' for refs to prevent strict TS build errors
   const recognitionRef = useRef<any>(null);
   const timerRef = useRef<any>(null);
 
@@ -288,18 +301,15 @@ export default function App() {
     const nextIndex = getNextExerciseIndex();
     const nextExercise = currentPhase.exercises[nextIndex];
     
-    // Set UI State immediately
     setActiveExercise(nextExercise);
     setTimeLeft(nextExercise.duration);
     setIsRunning(false);
     setView('home');
 
-    // Generate Content
     let briefing = "";
     
     if (apiKey) {
         setCoachMessage("Gemini analysiert...");
-        // Dynamic AI Content
         const days = lastLog ? getDaysDifference(Date.now(), lastLog.timestamp) : 0;
         const context = `
             Nutzer startet Training.
@@ -311,7 +321,6 @@ export default function App() {
         if (aiText) briefing = aiText;
         else briefing = `Weiter geht's. Nächste Übung: ${nextExercise.name}.`;
     } else {
-        // Fallback Logic
         if (!hasStarted && lastLog) { 
              const days = getDaysDifference(Date.now(), lastLog.timestamp);
              if (days > 2) briefing += `Willkommen zurück nach ${days} Tagen. `;
@@ -383,7 +392,6 @@ export default function App() {
     }
   };
 
-  // Voice Listener Update
   useEffect(() => {
     if (recognitionRef.current) {
         recognitionRef.current.onresult = (event: any) => {
@@ -406,7 +414,7 @@ export default function App() {
             }
         };
     }
-  }, [activeExercise, isRunning, view, logs, currentPhase, apiKey]); // Added apiKey dep
+  }, [activeExercise, isRunning, view, logs, currentPhase, apiKey]);
 
   const toggleMic = () => {
     if (isListening) {
@@ -458,7 +466,6 @@ export default function App() {
     return () => clearInterval(timerRef.current);
   }, [isRunning, activeExercise, timeLeft]);
 
-  // Handle API Key Input
   const handleSaveKey = () => {
       localStorage.setItem('geminiApiKey', apiKey);
       setView('home');
@@ -593,7 +600,7 @@ export default function App() {
                 )}
             </div>
 
-            {activeExercise && (
+            {activeExercise ? (
                 <div className="flex-1 flex flex-col items-center justify-center space-y-6 py-4 animate-in fade-in duration-500">
                     <div className="text-center space-y-2">
                         <h3 className="text-2xl font-bold text-white">{activeExercise.name}</h3>
@@ -626,6 +633,42 @@ export default function App() {
                         <button onClick={finishExercise} className="px-4 bg-slate-800 text-green-400 border border-slate-700 rounded-xl hover:bg-slate-750 font-semibold">
                             Fertig
                         </button>
+                    </div>
+                </div>
+            ) : (
+                <div className="space-y-4 animate-in slide-in-from-bottom-4 duration-500">
+                    <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                        <Calendar size={14} />
+                        Plan: {currentPhase.name}
+                    </h3>
+                    <div className="grid gap-2">
+                        {currentPhase.exercises.map((ex, index) => {
+                            const nextIndex = getNextExerciseIndex();
+                            const isRecommended = index === nextIndex;
+                            return (
+                                <div 
+                                  key={ex.id} 
+                                  className={`w-full text-left p-3 bg-slate-800 border rounded-lg flex justify-between items-center group transition-all
+                                    ${isRecommended ? 'border-blue-500/50 shadow-lg shadow-blue-500/10' : 'border-slate-700 hover:border-slate-600'}`}
+                                >
+                                    <div>
+                                        <div className={`font-medium ${isRecommended ? 'text-blue-300' : 'text-slate-200'}`}>
+                                            {ex.name}
+                                            {isRecommended && <span className="ml-2 text-[10px] uppercase bg-blue-500 text-white px-1.5 py-0.5 rounded font-bold">Next</span>}
+                                        </div>
+                                        <div className="text-xs text-slate-500 mt-0.5">{ex.target}</div>
+                                    </div>
+                                    <div className="flex gap-2">
+                                         <a href={ex.videoUrl} target="_blank" rel="noreferrer" className="p-2 bg-slate-900 rounded-md text-slate-400 hover:text-blue-400 transition-colors">
+                                            <ExternalLink size={16} />
+                                         </a>
+                                         <button onClick={() => { setActiveExercise(ex); setTimeLeft(ex.duration); setView('home'); }} className="p-2 bg-slate-700 rounded-md text-white hover:bg-blue-600 transition-colors">
+                                            <Play size={16} fill="currentColor" />
+                                         </button>
+                                    </div>
+                                </div>
+                            );
+                        })}
                     </div>
                 </div>
             )}
