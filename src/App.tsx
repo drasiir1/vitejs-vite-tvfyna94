@@ -473,6 +473,43 @@ export default function App() {
 
   if (!hasStarted) {
     const progress = getPhaseProgress(currentPhase);
+    
+    // START SCREEN WITH SETTINGS VIEW HANDLING
+    if (view === 'settings') {
+      return (
+        <div className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-6 font-sans">
+            <div className="max-w-md w-full space-y-6 animate-in fade-in">
+                <button onClick={() => setView('home')} className="flex items-center gap-2 text-slate-400 hover:text-white mb-4 transition-colors">
+                    <ArrowLeft size={20} /> Zurück
+                </button>
+                <div className="space-y-2">
+                    <h2 className="text-2xl font-bold flex items-center gap-2 text-blue-400">
+                        <Key /> Gemini API Key
+                    </h2>
+                    <p className="text-sm text-slate-400 leading-relaxed">
+                        Für den "echten Trainer"-Modus (Rollenspiel) benötigst du einen kostenlosen API Key von Google AI Studio. Ohne Key nutzt die App Standard-Antworten.
+                    </p>
+                </div>
+                <div className="space-y-4 pt-2">
+                    <input 
+                        type="password" 
+                        placeholder="API Key hier einfügen..." 
+                        value={apiKey}
+                        onChange={(e) => setApiKey(e.target.value)}
+                        className="w-full p-4 bg-slate-800 border border-slate-700 rounded-xl text-white focus:border-blue-500 outline-none transition-all focus:ring-2 focus:ring-blue-500/20"
+                    />
+                    <button onClick={handleSaveKey} className="w-full bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-xl font-bold transition-all shadow-lg hover:shadow-blue-500/20">
+                        Speichern
+                    </button>
+                    <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="block text-center text-blue-400 text-sm mt-4 hover:underline flex items-center justify-center gap-1">
+                        API Key kostenlos erstellen <ExternalLink size={12} />
+                    </a>
+                </div>
+            </div>
+        </div>
+      );
+    }
+
     return (
       <div className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-6 font-sans">
         <div className="max-w-md w-full text-center space-y-8 animate-in fade-in duration-700">
@@ -503,7 +540,7 @@ export default function App() {
                  <Play size={20} className="group-hover:scale-110 transition-transform" />
                  Start
                </button>
-               <button onClick={() => setView('settings')} className="bg-slate-800 p-4 rounded-xl text-slate-400 hover:text-white border border-slate-700">
+               <button onClick={() => setView('settings')} className="bg-slate-800 p-4 rounded-xl text-slate-400 hover:text-white border border-slate-700 transition-colors hover:border-blue-500">
                    <Settings size={24} />
                </button>
            </div>
