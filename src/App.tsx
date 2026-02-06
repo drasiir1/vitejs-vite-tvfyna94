@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Play, Square, Activity, Trophy, History, ArrowLeft, RefreshCw, Video, HelpCircle, X, Settings, Key, Calendar, ExternalLink } from 'lucide-react';
+import { Mic, MicOff, Play, Square, Activity, Trophy, ScrollText, ArrowLeft, RefreshCw, Video, HelpCircle, X, Settings, Key, ExternalLink, Calendar } from 'lucide-react';
 
 // --- Types & Constants ---
 
@@ -176,7 +176,7 @@ const speak = (text: string) => {
   window.speechSynthesis.speak(utterance);
 };
 
-// --- GEMINI API LOGIC (REST Version - No SDK needed) ---
+// --- GEMINI API LOGIC ---
 
 const callGeminiCoach = async (apiKey: string, context: string, systemRole: string = "Motivator") => {
     if (!apiKey) return null;
@@ -218,7 +218,7 @@ const callGeminiCoach = async (apiKey: string, context: string, systemRole: stri
 export default function App() {
   const [currentPhase, setCurrentPhase] = useState<Phase>(PHASES[0]);
   const [hasStarted, setHasStarted] = useState(false);
-  const [lastWorkout, setLastWorkout] = useState<number | null>(null);
+  
   const [streak, setStreak] = useState(0);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [view, setView] = useState<'home' | 'log' | 'settings'>('home');
@@ -232,17 +232,17 @@ export default function App() {
   const [coachMessage, setCoachMessage] = useState("Lade Trainingsplan...");
   
   const shouldListenRef = useRef(false);
-  // Using 'any' for refs to prevent strict TS build errors
   const recognitionRef = useRef<any>(null);
   const timerRef = useRef<any>(null);
 
+  // Derived State
+  const lastWorkout = logs.length > 0 ? logs[0].timestamp : null;
+
   useEffect(() => {
-    const savedLastWorkout = localStorage.getItem('lastWorkout');
     const savedStreak = localStorage.getItem('streak');
     const savedLogs = localStorage.getItem('workoutLogs');
     const savedKey = localStorage.getItem('geminiApiKey');
     
-    if (savedLastWorkout) setLastWorkout(parseInt(savedLastWorkout));
     if (savedStreak) setStreak(parseInt(savedStreak));
     if (savedLogs) setLogs(JSON.parse(savedLogs));
     if (savedKey) setApiKey(savedKey);
@@ -339,8 +339,8 @@ export default function App() {
     
     const now = Date.now();
     const currentExName = activeExercise.name;
-    setLastWorkout(now);
-    setStreak(s => s + 1);
+    const newStreak = streak + 1;
+    setStreak(newStreak);
     
     const newLog = {
       id: now,
@@ -352,8 +352,7 @@ export default function App() {
     const updatedLogs = [newLog, ...logs];
     setLogs(updatedLogs);
 
-    localStorage.setItem('lastWorkout', now.toString());
-    localStorage.setItem('streak', (streak + 1).toString());
+    localStorage.setItem('streak', newStreak.toString());
     localStorage.setItem('workoutLogs', JSON.stringify(updatedLogs));
 
     setActiveExercise(null); 
@@ -490,6 +489,11 @@ export default function App() {
                  <span className="text-xs text-slate-500">Woche {progress.currentWeek} von {progress.totalWeeks}</span>
               </div>
            </div>
+           <p className="text-slate-400">
+             {lastWorkout 
+               ? `Letztes Training: vor ${getDaysDifference(Date.now(), lastWorkout)} Tagen`
+               : "Dein Start in den Trainingsplan."}
+           </p>
            
            <div className="flex gap-4 w-full">
                <button 
@@ -531,6 +535,10 @@ export default function App() {
                  <HelpCircle size={18} />
              </button>
 
+             <button onClick={() => setView(view === 'home' ? 'log' : 'home')} className="p-2 bg-slate-700 hover:bg-slate-600 rounded-full text-slate-400 transition-colors">
+               <ScrollText size={18} />
+             </button>
+             
              <button 
              onClick={toggleMic}
              className={`p-2 rounded-full transition-colors ${isListening ? 'bg-red-500/20 text-red-400 animate-pulse' : 'bg-slate-700 text-slate-400'}`}
