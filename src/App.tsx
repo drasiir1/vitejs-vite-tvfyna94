@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Play, Square, Activity, Calendar, Trophy, History, ArrowLeft, RefreshCw, Video, ExternalLink, HelpCircle, X } from 'lucide-react';
+import { Mic, MicOff, Play, Square, Activity, Calendar, Trophy, History, ArrowLeft, RefreshCw, Video, ExternalLink, HelpCircle, X, Settings, Key } from 'lucide-react';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // --- Types & Constants ---
 
 type Exercise = {
   id: string;
   name: string;
-  duration: number; // default timer duration in seconds
-  target: string; // e.g. "Max. Zeit" or "20 Sek."
+  duration: number;
+  target: string;
   description: string;
   voiceCues: string[];
   videoUrl: string;
@@ -16,8 +17,8 @@ type Exercise = {
 type Phase = {
   id: number;
   name: string;
-  startDate: string; // YYYY-MM-DD
-  endDate: string; // YYYY-MM-DD
+  startDate: string;
+  endDate: string;
   exercises: Exercise[];
   description: string;
 };
@@ -151,12 +152,17 @@ const getPhaseProgress = (phase: Phase) => {
     const now = Date.now();
     const totalDuration = end - start;
     const elapsed = now - start;
-    
-    // Calculate weeks (approx)
     const currentWeek = Math.ceil(elapsed / (7 * 24 * 60 * 60 * 1000));
     const totalWeeks = Math.ceil(totalDuration / (7 * 24 * 60 * 60 * 1000));
-    
     return { currentWeek: Math.max(1, currentWeek), totalWeeks: Math.max(1, totalWeeks) };
+};
+
+const getPreferredVoice = () => {
+  if (!('speechSynthesis' in window)) return null;
+  const voices = window.speechSynthesis.getVoices();
+  return voices.find(v => v.lang === 'de-DE' && (v.name.includes('Google') || v.name.includes('Natural'))) 
+      || voices.find(v => v.lang === 'de-DE') 
+      || null;
 };
 
 const speak = (text: string) => {
@@ -164,22 +170,48 @@ const speak = (text: string) => {
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = 'de-DE';
-  utterance.rate = 1.1; 
+  const voice = getPreferredVoice();
+  if (voice) utterance.voice = voice;
+  utterance.rate = 1.05; 
   utterance.pitch = 1.0;
   window.speechSynthesis.speak(utterance);
+};
+
+// --- GEMINI API LOGIC ---
+
+const callGeminiCoach = async (apiKey: string, context: string, systemRole: string = "Motivator") => {
+    try {
+        const genAI = new GoogleGenerativeAI(apiKey);
+        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Use fast model
+        
+        const prompt = `
+        Du bist ein strenger, aber fairer Calisthenics Coach. Rollenspiel. 
+        Antworte extrem kurz (max 2 Sätze). Du sprichst direkt mit dem Athleten.
+        Situation: ${context}
+        Rolle: ${systemRole}.
+        Sprache: Deutsch. Umgangssprache, direkt.
+        `;
+
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        return response.text();
+    } catch (error) {
+        console.error("Gemini Error:", error);
+        return null; // Fallback handled by caller
+    }
 };
 
 // --- Components ---
 
 export default function App() {
-  // State
   const [currentPhase, setCurrentPhase] = useState<Phase>(PHASES[0]);
   const [hasStarted, setHasStarted] = useState(false);
   const [lastWorkout, setLastWorkout] = useState<number | null>(null);
   const [streak, setStreak] = useState(0);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [view, setView] = useState<'home' | 'log'>('home');
+  const [view, setView] = useState<'home' | 'log' | 'settings'>('home');
   const [showHelp, setShowHelp] = useState(false);
+  const [apiKey, setApiKey] = useState("");
 
   const [isListening, setIsListening] = useState(false);
   const [activeExercise, setActiveExercise] = useState<Exercise | null>(null);
@@ -187,28 +219,28 @@ export default function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [coachMessage, setCoachMessage] = useState("Lade Trainingsplan...");
   
-  // Refs
-  // FIX: Use 'any' to avoid NodeJS namespace issues during build
+  const shouldListenRef = useRef(false);
   const recognitionRef = useRef<any>(null);
   const timerRef = useRef<any>(null);
 
-  // --- Initialization ---
-
   useEffect(() => {
-    // Load Data
     const savedLastWorkout = localStorage.getItem('lastWorkout');
     const savedStreak = localStorage.getItem('streak');
     const savedLogs = localStorage.getItem('workoutLogs');
+    const savedKey = localStorage.getItem('geminiApiKey');
     
     if (savedLastWorkout) setLastWorkout(parseInt(savedLastWorkout));
     if (savedStreak) setStreak(parseInt(savedStreak));
     if (savedLogs) setLogs(JSON.parse(savedLogs));
+    if (savedKey) setApiKey(savedKey);
 
-    // Determine Phase
-    const phase = getCurrentPhase();
-    setCurrentPhase(phase);
+    setCurrentPhase(getCurrentPhase());
 
-    // Init Speech
+    if ('speechSynthesis' in window) {
+       window.speechSynthesis.getVoices(); 
+       window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+    }
+
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       recognitionRef.current = new SpeechRecognition();
@@ -217,18 +249,28 @@ export default function App() {
       recognitionRef.current.lang = 'de-DE';
       
       recognitionRef.current.onend = () => {
-        if (recognitionRef.current && !recognitionRef.current.aborted) {
-             try { recognitionRef.current.start(); } catch {}
+        if (shouldListenRef.current) {
+             try { 
+               recognitionRef.current.start(); 
+             } catch (e) {
+               setTimeout(() => {
+                 if (shouldListenRef.current) {
+                    try { recognitionRef.current.start(); } catch {}
+                 }
+               }, 1000);
+             }
+        } else {
+             setIsListening(false);
         }
       };
     }
 
     return () => {
-        window.speechSynthesis.cancel(); // Safety cleanup
+        shouldListenRef.current = false;
+        if (recognitionRef.current) recognitionRef.current.stop();
+        window.speechSynthesis.cancel();
     };
   }, []);
-
-  // --- Logic Helpers ---
 
   const getNextExerciseIndex = () => {
     const lastLog = logs[0];
@@ -238,47 +280,56 @@ export default function App() {
            return lastIndex + 1;
        }
     }
-    return 0; // Default to first if new phase or finished cycle
+    return 0;
   };
 
-  const generateBriefingAndSelect = () => {
+  const generateBriefingAndSelect = async () => {
     const lastLog = logs[0];
-    let briefing = "";
-    
-    // Inactivity Check for Briefing
-    if (!activeExercise && !hasStarted && lastLog) { 
-         const days = getDaysDifference(Date.now(), lastLog.timestamp);
-         if (days > 2) briefing += `Willkommen zurück nach ${days} Tagen. `;
-         else if (days === 0) briefing += "Zweite Runde heute. ";
-    } else if (!hasStarted) {
-         briefing += "Lass uns beginnen. ";
-    }
-
     const nextIndex = getNextExerciseIndex();
     const nextExercise = currentPhase.exercises[nextIndex];
-
-    if (nextIndex === 0 && lastLog && lastLog.phaseId === currentPhase.id) {
-         briefing += "Neuer Zirkel-Durchgang. ";
-    } else if (lastLog) {
-         briefing += "Weiter geht's. ";
-    }
-
-    briefing += `Nächste Übung: ${nextExercise.name}. ${nextExercise.target}.`;
     
+    // Set UI State immediately
     setActiveExercise(nextExercise);
     setTimeLeft(nextExercise.duration);
     setIsRunning(false);
     setView('home');
+
+    // Generate Content
+    let briefing = "";
+    
+    if (apiKey) {
+        setCoachMessage("Gemini analysiert...");
+        // Dynamic AI Content
+        const days = lastLog ? getDaysDifference(Date.now(), lastLog.timestamp) : 0;
+        const context = `
+            Nutzer startet Training.
+            Letztes Training vor ${days} Tagen.
+            Nächste Übung: ${nextExercise.name} (${nextExercise.target}).
+            Streak: ${streak}.
+        `;
+        const aiText = await callGeminiCoach(apiKey, context, "Drill Instructor");
+        if (aiText) briefing = aiText;
+        else briefing = `Weiter geht's. Nächste Übung: ${nextExercise.name}.`;
+    } else {
+        // Fallback Logic
+        if (!hasStarted && lastLog) { 
+             const days = getDaysDifference(Date.now(), lastLog.timestamp);
+             if (days > 2) briefing += `Willkommen zurück nach ${days} Tagen. `;
+        }
+        briefing += `Nächste Übung: ${nextExercise.name}. ${nextExercise.target}.`;
+    }
+
     setCoachMessage(briefing);
     speak(briefing);
   };
 
-  const finishExercise = () => {
+  const finishExercise = async () => {
     if (!activeExercise) return;
     clearInterval(timerRef.current);
     setIsRunning(false);
     
     const now = Date.now();
+    const currentExName = activeExercise.name;
     setLastWorkout(now);
     setStreak(s => s + 1);
     
@@ -298,11 +349,27 @@ export default function App() {
 
     setActiveExercise(null); 
     
-    setTimeout(() => {
+    if (apiKey) {
+        setCoachMessage("Gemini bewertet...");
+        const context = `
+            Nutzer hat gerade beendet: ${currentExName}.
+            Dauer: ${activeExercise.duration} Sekunden geplant.
+            Sag 'Weiter', um fortzufahren.
+        `;
+        const aiText = await callGeminiCoach(apiKey, context, "Lobender Trainer");
+        if (aiText) {
+            setCoachMessage(aiText);
+            speak(aiText);
+        } else {
+             const msg = "Stark! Sag 'Weiter' für die nächste.";
+             setCoachMessage(msg);
+             speak(msg);
+        }
+    } else {
         const msg = "Gespeichert. Sag 'Weiter' für die nächste Übung.";
         setCoachMessage(msg);
         speak(msg);
-    }, 500);
+    }
   };
 
   const toggleTimer = () => {
@@ -316,8 +383,7 @@ export default function App() {
     }
   };
 
-  // --- Voice Logic ---
-
+  // Voice Listener Update
   useEffect(() => {
     if (recognitionRef.current) {
         recognitionRef.current.onresult = (event: any) => {
@@ -333,25 +399,23 @@ export default function App() {
             } else if ((transcriptText.includes('weiter') || transcriptText.includes('nächste')) ) {
                 if (activeExercise) finishExercise(); 
                 else generateBriefingAndSelect(); 
-            } else if (transcriptText.includes('log') || transcriptText.includes('verlauf')) {
+            } else if (transcriptText.includes('log')) {
                 setView('log');
-                speak("Hier ist dein Verlauf.");
-            } else if (transcriptText.includes('zurück') || transcriptText.includes('home')) {
+            } else if (transcriptText.includes('home') || transcriptText.includes('zurück')) {
                 setView('home');
-                speak("Zurück zum Training.");
             }
         };
     }
-  }, [activeExercise, isRunning, view, logs, currentPhase]); 
+  }, [activeExercise, isRunning, view, logs, currentPhase, apiKey]); // Added apiKey dep
 
   const toggleMic = () => {
     if (isListening) {
+      shouldListenRef.current = false;
       recognitionRef.current?.stop();
-      recognitionRef.current.aborted = true; 
       setIsListening(false);
     } else {
+      shouldListenRef.current = true;
       try {
-          recognitionRef.current.aborted = false;
           recognitionRef.current?.start();
           setIsListening(true);
           speak("Ich höre zu.");
@@ -363,17 +427,14 @@ export default function App() {
     setHasStarted(true);
     generateBriefingAndSelect();
     
-    // Auto start mic
     if (recognitionRef.current && !isListening) {
+        shouldListenRef.current = true;
         try {
-            recognitionRef.current.aborted = false;
             recognitionRef.current.start();
             setIsListening(true);
         } catch (e) { console.error(e); }
     }
   };
-
-  // --- Timer ---
 
   useEffect(() => {
     if (isRunning && activeExercise && timeLeft > 0) {
@@ -397,7 +458,12 @@ export default function App() {
     return () => clearInterval(timerRef.current);
   }, [isRunning, activeExercise, timeLeft]);
 
-  // --- Render ---
+  // Handle API Key Input
+  const handleSaveKey = () => {
+      localStorage.setItem('geminiApiKey', apiKey);
+      setView('home');
+      speak("API Key gespeichert. Ich bin bereit.");
+  };
 
   if (!hasStarted) {
     const progress = getPhaseProgress(currentPhase);
@@ -409,7 +475,7 @@ export default function App() {
              <Activity size={64} className="relative text-white mx-auto" />
            </div>
            <div>
-              <h1 className="text-3xl font-bold tracking-tight mb-2">AI Calisthenics Coach</h1>
+              <h1 className="text-3xl font-bold tracking-tight mb-2">Gemini Calisthenics</h1>
               <div className="flex flex-col items-center gap-1">
                  <div className="inline-block bg-blue-900/30 border border-blue-500/30 px-3 py-1 rounded-full text-sm text-blue-300">
                    {currentPhase.name}
@@ -417,39 +483,36 @@ export default function App() {
                  <span className="text-xs text-slate-500">Woche {progress.currentWeek} von {progress.totalWeeks}</span>
               </div>
            </div>
-           <p className="text-slate-400">
-             {lastWorkout 
-               ? `Letztes Training: vor ${getDaysDifference(Date.now(), lastWorkout)} Tagen`
-               : "Dein Start in den Trainingsplan."}
-           </p>
            
-           <button 
-             onClick={startSession}
-             className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-4 px-6 rounded-xl transition-all shadow-lg hover:shadow-blue-500/20 flex items-center justify-center gap-2 group"
-           >
-             <Play size={20} className="group-hover:scale-110 transition-transform" />
-             Heutiges Training starten
-           </button>
+           <div className="flex gap-4 w-full">
+               <button 
+                 onClick={startSession}
+                 className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-4 px-6 rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 group"
+               >
+                 <Play size={20} className="group-hover:scale-110 transition-transform" />
+                 Start
+               </button>
+               <button onClick={() => setView('settings')} className="bg-slate-800 p-4 rounded-xl text-slate-400 hover:text-white border border-slate-700">
+                   <Settings size={24} />
+               </button>
+           </div>
         </div>
       </div>
     );
   }
 
-  const nextRecommendedIndex = getNextExerciseIndex();
-
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans">
-      {/* Header */}
       <header className="bg-slate-800 p-4 flex justify-between items-center shadow-md border-b border-slate-700 z-10 sticky top-0">
         <div className="flex items-center gap-2">
-           {view === 'log' ? (
+           {view !== 'home' ? (
              <button onClick={() => setView('home')} className="p-1 hover:bg-slate-700 rounded-full transition-colors">
                <ArrowLeft size={24} className="text-blue-400" />
              </button>
            ) : (
              <Activity className="text-blue-400" size={24} />
            )}
-           <span className="font-bold text-lg truncate max-w-[150px]">{view === 'log' ? 'Log' : currentPhase.name.split(':')[0]}</span>
+           <span className="font-bold text-lg truncate max-w-[150px]">{view === 'settings' ? 'Settings' : (view === 'log' ? 'Log' : 'Coach')}</span>
         </div>
         <div className="flex items-center gap-3">
              <div className="flex items-center gap-1 text-yellow-400 text-xs bg-yellow-400/10 px-2 py-1 rounded-full border border-yellow-400/20">
@@ -457,14 +520,10 @@ export default function App() {
                  <span>{streak}</span>
              </div>
              
-             <button onClick={() => setShowHelp(!showHelp)} className="p-2 bg-slate-700 hover:bg-slate-600 rounded-full text-slate-400 transition-colors" title="Sprachbefehle">
+             <button onClick={() => setShowHelp(!showHelp)} className="p-2 bg-slate-700 hover:bg-slate-600 rounded-full text-slate-400 transition-colors">
                  <HelpCircle size={18} />
              </button>
 
-             <button onClick={() => setView(view === 'home' ? 'log' : 'home')} className="p-2 bg-slate-700 hover:bg-slate-600 rounded-full text-slate-400 transition-colors">
-               <History size={18} />
-             </button>
-             
              <button 
              onClick={toggleMic}
              className={`p-2 rounded-full transition-colors ${isListening ? 'bg-red-500/20 text-red-400 animate-pulse' : 'bg-slate-700 text-slate-400'}`}
@@ -474,7 +533,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Voice Commands Cheat Sheet */}
       {showHelp && (
           <div className="bg-slate-800 border-b border-slate-700 p-4 text-sm animate-in slide-in-from-top-2">
               <div className="flex justify-between items-center mb-2">
@@ -485,20 +543,43 @@ export default function App() {
                   <div className="flex items-center gap-2"><span className="w-2 h-2 bg-blue-500 rounded-full"></span> "Start" / "Los"</div>
                   <div className="flex items-center gap-2"><span className="w-2 h-2 bg-red-500 rounded-full"></span> "Stopp" / "Pause"</div>
                   <div className="flex items-center gap-2"><span className="w-2 h-2 bg-green-500 rounded-full"></span> "Weiter" / "Fertig"</div>
-                  <div className="flex items-center gap-2"><span className="w-2 h-2 bg-yellow-500 rounded-full"></span> "Verlauf" / "Zurück"</div>
               </div>
           </div>
       )}
 
-      {/* Main Content */}
       <main className="flex-1 p-6 flex flex-col gap-6 max-w-2xl mx-auto w-full">
-        
+        {view === 'settings' && (
+            <div className="space-y-4 animate-in fade-in">
+                <h2 className="text-xl font-bold flex items-center gap-2">
+                    <Key className="text-blue-400"/> Gemini API Key
+                </h2>
+                <p className="text-sm text-slate-400">
+                    Für den "echten Trainer"-Modus benötigst du einen kostenlosen API Key von Google AI Studio. Ohne Key nutzt die App Standard-Antworten.
+                </p>
+                <input 
+                    type="password" 
+                    placeholder="API Key hier einfügen..." 
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    className="w-full p-4 bg-slate-800 border border-slate-700 rounded-xl text-white focus:border-blue-500 outline-none"
+                />
+                <button onClick={handleSaveKey} className="w-full bg-blue-600 hover:bg-blue-700 p-4 rounded-xl font-bold">
+                    Speichern
+                </button>
+                <a href="https://aistudio.google.com/app/apikey" target="_blank" className="block text-center text-blue-400 text-sm mt-4 hover:underline">
+                    API Key kostenlos erstellen &rarr;
+                </a>
+            </div>
+        )}
+
         {view === 'home' && (
           <>
-            {/* AI Feedback Area */}
-            <div className="bg-slate-800/50 border border-slate-700 rounded-2xl p-6 relative">
+            <div className={`bg-slate-800/50 border ${apiKey ? 'border-blue-500/50' : 'border-slate-700'} rounded-2xl p-6 relative`}>
                 <div className="absolute top-0 left-0 w-1 h-full bg-blue-500"></div>
-                <h2 className="text-slate-400 text-xs uppercase tracking-wider mb-2 font-semibold">Coach Feedback</h2>
+                <h2 className="text-slate-400 text-xs uppercase tracking-wider mb-2 font-semibold flex justify-between">
+                    Coach Feedback
+                    {apiKey && <span className="text-blue-400 text-[10px] bg-blue-900/20 px-1 rounded border border-blue-500/20">Gemini Active</span>}
+                </h2>
                 <p className="text-lg font-medium text-white min-h-[3rem] leading-relaxed">
                     "{coachMessage}"
                 </p>
@@ -512,26 +593,19 @@ export default function App() {
                 )}
             </div>
 
-            {/* Active Exercise */}
-            {activeExercise ? (
+            {activeExercise && (
                 <div className="flex-1 flex flex-col items-center justify-center space-y-6 py-4 animate-in fade-in duration-500">
                     <div className="text-center space-y-2">
                         <h3 className="text-2xl font-bold text-white">{activeExercise.name}</h3>
                         <div className="flex items-center justify-center gap-2 text-slate-400 text-sm">
                             <span className="bg-slate-800 px-2 py-1 rounded border border-slate-700">{activeExercise.target}</span>
-                            <a 
-                                href={activeExercise.videoUrl} 
-                                target="_blank" 
-                                rel="noopener noreferrer"
-                                className="flex items-center gap-1 text-blue-400 hover:underline"
-                            >
+                            <a href={activeExercise.videoUrl} target="_blank" className="flex items-center gap-1 text-blue-400 hover:underline">
                                 <Video size={14} /> Video
                             </a>
                         </div>
                         <p className="text-slate-400 text-sm max-w-xs mx-auto">{activeExercise.description}</p>
                     </div>
 
-                    {/* Timer Circle */}
                     <div className="relative w-56 h-56 flex items-center justify-center">
                         <svg className="absolute w-full h-full transform -rotate-90">
                             <circle cx="112" cy="112" r="100" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-slate-800" />
@@ -554,53 +628,13 @@ export default function App() {
                         </button>
                     </div>
                 </div>
-            ) : (
-                <div className="space-y-4 animate-in slide-in-from-bottom-4 duration-500">
-                    <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
-                        <Calendar size={14} />
-                        Plan: {currentPhase.name}
-                    </h3>
-                    <div className="grid gap-2">
-                        {currentPhase.exercises.map((ex, index) => {
-                            const isRecommended = index === nextRecommendedIndex;
-                            return (
-                                <div 
-                                  key={ex.id} 
-                                  className={`w-full text-left p-3 bg-slate-800 border rounded-lg flex justify-between items-center group transition-all
-                                    ${isRecommended ? 'border-blue-500/50 shadow-lg shadow-blue-500/10' : 'border-slate-700 hover:border-slate-600'}`}
-                                >
-                                    <div>
-                                        <div className={`font-medium ${isRecommended ? 'text-blue-300' : 'text-slate-200'}`}>
-                                            {ex.name}
-                                            {isRecommended && <span className="ml-2 text-[10px] uppercase bg-blue-500 text-white px-1.5 py-0.5 rounded font-bold">Next</span>}
-                                        </div>
-                                        <div className="text-xs text-slate-500 mt-0.5">{ex.target}</div>
-                                    </div>
-                                    <div className="flex gap-2">
-                                         <a href={ex.videoUrl} target="_blank" rel="noreferrer" className="p-2 bg-slate-900 rounded-md text-slate-400 hover:text-blue-400 transition-colors">
-                                            <ExternalLink size={16} />
-                                         </a>
-                                         <button onClick={() => { setActiveExercise(ex); setTimeLeft(ex.duration); setView('home'); }} className="p-2 bg-slate-700 rounded-md text-white hover:bg-blue-600 transition-colors">
-                                            <Play size={16} fill="currentColor" />
-                                         </button>
-                                    </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-                </div>
             )}
           </>
         )}
 
         {view === 'log' && (
           <div className="space-y-4 animate-in fade-in slide-in-from-right-8 duration-300">
-             {logs.length === 0 ? (
-               <div className="text-center text-slate-500 py-12">
-                 <History size={48} className="mx-auto mb-4 opacity-20" />
-                 <p>Keine Einträge.</p>
-               </div>
-             ) : (
+             {logs.length === 0 ? <p className="text-center text-slate-500 py-12">Keine Einträge.</p> : (
                <div className="grid gap-2">
                  {logs.map((log) => (
                    <div key={log.id} className="bg-slate-800 border border-slate-700 p-3 rounded-lg flex justify-between items-center">
